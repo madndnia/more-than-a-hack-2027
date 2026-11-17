@@ -79,6 +79,27 @@ multi-frame tracking errors and plausible-looking false detections can survive t
 filter. Downstream consumers must use confidence to avoid treating long-gap fallbacks as reliable
 positions; the current scaffold decoder does not yet use the propagated team confidence.
 
+**Independent reconstruction check.** `python scripts/check_ball_quality.py` hides both coordinates
+and the observed flag for 200 nonoverlapping blocks per duration, sampled with seed 0 from fully
+observed stretches inside a half. Both visible endpoints are reserved. Each duration is evaluated
+as a separate experiment, without possession labels or parameter changes based on the results.
+All masked frames were reconstructed. Euclidean errors against the hidden tracker observations:
+
+| hidden duration (s) | mean error (m) | median error (m) | 95th percentile (m) |
+|---|---|---|---|
+| 0.20 | 0.050 | 0.036 | 0.146 |
+| 0.48 | 0.211 | 0.130 | 0.663 |
+| 1.00 | 0.714 | 0.431 | 2.128 |
+| 2.00 | 1.778 | 1.101 | 5.547 |
+| 5.00 | 5.915 | 4.695 | 15.339 |
+| 10.00 | 11.004 | 9.135 | 27.269 |
+
+The original linear interpolation has identical position errors on these blocks; no position
+accuracy improvement is claimed. The new component adds gap-dependent confidence, conservative
+spike rejection and bounded edge holds. Fully observed stretches can be easier than naturally
+missing segments, and the reference tracker positions are automatic, not corrected ground truth.
+These results do not validate possession accuracy or confidence calibration.
+
 ### 4.3 Dead-ball detector (P2)
 _TODO_
 
@@ -110,9 +131,9 @@ Each value was checked for plausibility against football knowledge before a chan
 - **Loader:** the broadcast recording is not used; mapping it onto the tactical timeline could
   recover ball positions where the tactical tracker loses the ball.
 - **Ball reconstruction:** long gaps remain weak linear fallbacks, and isolated-spike rejection
-  does not detect sustained false tracks. Future work would validate reconstruction by masking
-  observed blocks and measuring position error by gap duration, then assess downstream effects
-  without tuning on the public possession labels.
+  does not detect sustained false tracks. Masked-block checks show error increasing strongly with
+  gap duration; future work would test generalisation to naturally missing segments and assess
+  downstream effects without tuning on the public possession labels.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
