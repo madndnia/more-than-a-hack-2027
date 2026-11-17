@@ -59,7 +59,50 @@ and 79,390. Re-running `starter/baseline.py` reproduces the published baseline s
 bundle and the alignment before any of our own logic is involved.
 
 ### 4.2 Ball reconstruction (P3)
-_TODO_
+`mtah/ball.py` reconstructs the two ball coordinates jointly and independently within each
+contiguous half. Finite observed positions are retained without pitch clipping or general
+smoothing, preserving out-of-play evidence and abrupt direction changes. An isolated observation
+is excluded as an anchor only when both adjacent frames are observed, both incoming and outgoing
+speeds exceed 55 m/s, the two neighbours imply less than 20 m/s, and the point deviates more than
+3 m from their midpoint. Missing positions are linearly interpolated between accepted anchors.
+Gaps up to 1 s receive a confidence weight of `0.8 * exp(-gap_seconds)`; longer gaps retain a
+linear fallback with weight `0.1 * exp(-(gap_seconds - 1) / 5)`. Implied endpoint speeds above
+55 m/s further reduce this weight. Boundary positions are held for at most 0.5 s with low,
+decaying confidence; otherwise coordinates remain NaN with zero confidence. The original
+`observed` mask is preserved, and an extra `rejected` mask records excluded observations.
+
+These weights and thresholds are engineering defaults, not calibrated probabilities or parameters
+tuned on possession ground truth. Synthetic tests cover interpolation, isolated spikes, fast
+passes, direction changes, invalid coordinates, half boundaries, deterministic output and the
+full-size artifact contract. On the provided match, the component completed in approximately
+0.2 s; the conservative spike filter rejected no observed points. The complete pipeline produced
+a valid 199,319-row CSV, and a second run reproduced the identical SHA256. This verifies
+integration and reproducibility, not reconstruction accuracy or a scoring improvement.
+Long-gap paths cannot recover unseen passes or touches;
+multi-frame tracking errors and plausible-looking false detections can survive the conservative
+filter. Downstream consumers must use confidence to avoid treating long-gap fallbacks as reliable
+positions; the current scaffold decoder does not yet use the propagated team confidence.
+
+**Independent reconstruction check.** `python scripts/check_ball_quality.py` hides both coordinates
+and the observed flag for 200 nonoverlapping blocks per duration, sampled with seed 0 from fully
+observed stretches inside a half. Both visible endpoints are reserved. Each duration is evaluated
+as a separate experiment, without possession labels or parameter changes based on the results.
+All masked frames were reconstructed. Euclidean errors against the hidden tracker observations:
+
+| hidden duration (s) | mean error (m) | median error (m) | 95th percentile (m) |
+|---|---|---|---|
+| 0.20 | 0.050 | 0.036 | 0.146 |
+| 0.48 | 0.211 | 0.130 | 0.663 |
+| 1.00 | 0.714 | 0.431 | 2.128 |
+| 2.00 | 1.778 | 1.101 | 5.547 |
+| 5.00 | 5.915 | 4.695 | 15.339 |
+| 10.00 | 11.004 | 9.135 | 27.269 |
+
+The original linear interpolation has identical position errors on these blocks; no position
+accuracy improvement is claimed. The new component adds gap-dependent confidence, conservative
+spike rejection and bounded edge holds. Fully observed stretches can be easier than naturally
+missing segments, and the reference tracker positions are automatic, not corrected ground truth.
+These results do not validate possession accuracy or confidence calibration.
 
 ### 4.3 Dead-ball detector (P2)
 _TODO_
@@ -177,6 +220,10 @@ Each value was checked for plausibility against football knowledge before a chan
   safely rather than falling back to a partial or overwriting write. Atomic publication is not a
   guarantee of durability after every possible storage or power failure. Real-match accuracy and
   reproduction on the pinned dependencies still require P1's integration.
+- **Ball reconstruction:** long gaps remain weak linear fallbacks, and isolated-spike rejection
+  does not detect sustained false tracks. Masked-block checks show error increasing strongly with
+  gap duration; future work would test generalisation to naturally missing segments and assess
+  downstream effects without tuning on the public possession labels.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
