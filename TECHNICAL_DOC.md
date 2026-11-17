@@ -55,7 +55,29 @@ and 79,390. Re-running `starter/baseline.py` reproduces the published baseline s
 bundle and the alignment before any of our own logic is involved.
 
 ### 4.2 Ball reconstruction (P3)
-_TODO_
+`mtah/ball.py` reconstructs the two ball coordinates jointly and independently within each
+contiguous half. Finite observed positions are retained without pitch clipping or general
+smoothing, preserving out-of-play evidence and abrupt direction changes. An isolated observation
+is excluded as an anchor only when both adjacent frames are observed, both incoming and outgoing
+speeds exceed 55 m/s, the two neighbours imply less than 20 m/s, and the point deviates more than
+3 m from their midpoint. Missing positions are linearly interpolated between accepted anchors.
+Gaps up to 1 s receive a confidence weight of `0.8 * exp(-gap_seconds)`; longer gaps retain a
+linear fallback with weight `0.1 * exp(-(gap_seconds - 1) / 5)`. Implied endpoint speeds above
+55 m/s further reduce this weight. Boundary positions are held for at most 0.5 s with low,
+decaying confidence; otherwise coordinates remain NaN with zero confidence. The original
+`observed` mask is preserved, and an extra `rejected` mask records excluded observations.
+
+These weights and thresholds are engineering defaults, not calibrated probabilities or parameters
+tuned on possession ground truth. Synthetic tests cover interpolation, isolated spikes, fast
+passes, direction changes, invalid coordinates, half boundaries, deterministic output and the
+full-size artifact contract. On the provided match, the component completed in approximately
+0.2 s; the conservative spike filter rejected no observed points. The complete pipeline produced
+a valid 199,319-row CSV, and a second run reproduced the identical SHA256. This verifies
+integration and reproducibility, not reconstruction accuracy or a scoring improvement.
+Long-gap paths cannot recover unseen passes or touches;
+multi-frame tracking errors and plausible-looking false detections can survive the conservative
+filter. Downstream consumers must use confidence to avoid treating long-gap fallbacks as reliable
+positions; the current scaffold decoder does not yet use the propagated team confidence.
 
 ### 4.3 Dead-ball detector (P2)
 _TODO_
@@ -87,6 +109,10 @@ Each value was checked for plausibility against football knowledge before a chan
 ## 7. Limitations and what we would do with more time
 - **Loader:** the broadcast recording is not used; mapping it onto the tactical timeline could
   recover ball positions where the tactical tracker loses the ball.
+- **Ball reconstruction:** long gaps remain weak linear fallbacks, and isolated-spike rejection
+  does not detect sustained false tracks. Future work would validate reconstruction by masking
+  observed blocks and measuring position error by gap duration, then assess downstream effects
+  without tuning on the public possession labels.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
