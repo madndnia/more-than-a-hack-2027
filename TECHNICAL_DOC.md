@@ -1,44 +1,103 @@
-# <TEAM NAME> — Technical document, More than a Hack 2027 Phase 1
+# ronaldo2008 — Technical document, More than a Hack 2027 Phase 1
 
-## 1. Approach (P1 + P5)
-Modular pipeline: a per-frame loader, three independent estimators (dead ball, ball
-reconstruction, H vs A) and a Smart Tagging prior, combined by a temporal decoder.
-_Why this structure rather than an end-to-end model:_ TODO
+Repository: https://github.com/madndnia/more-than-a-hack-2027
 
-## 2. Assets used and dropped (P1)
+## 1. Approach
+A modular pipeline. One shared loader turns the provided assets into a single per-frame table;
+three independent estimators (dead ball, ball reconstruction, home vs away) and a Smart Tagging
+prior each write one per-frame probability file; a temporal decoder turns those into labels.
+
+We chose this structure for two reasons. First, the metric (spellF1) rewards whole, correctly
+bounded possessions rather than per-frame accuracy, so the decisive step is a temporal decoder that
+can enforce realistic possession lengths — which is easiest when its inputs are clean probabilities
+rather than hard labels. Second, it let five people work in parallel: every component has a fixed
+output contract (`CONTRACT.md`, enforced by `mtah/contract.py`), so nobody depended on anybody
+else's code, only on their output file.
+
+_TODO (P5): one paragraph on the final decoder and why it was chosen over alternatives._
+
+## 2. Assets used and dropped
 | asset | used? | how |
 |---|---|---|
-| tactical ATD | yes | loader, frame_id - 1 |
-| homography (tactical) | TODO | |
-| Smart Tagging | yes | P5 prior, set pieces as restart anchors |
-| broadcast video / ATD | TODO | |
-| tactical video | TODO | |
+| tactical ATD (players + ball) | yes | main input; read by `mtah/loader.py`, positions converted to metres on a 105.3 × 68.0 m pitch |
+| tactical ATD metadata | yes | team of each of the 46 track slots (first team = home) |
+| Smart Tagging | yes | team evidence from phase tags, set pieces as restart anchors (P5) |
+| tactical homography | loaded, _TODO: used?_ | validity and reprojection error are in the per-frame table |
+| tactical video | no | not needed for the final pipeline; _TODO if anyone used it for debugging_ |
+| broadcast video / ATD / homography | no | not synchronised to the tactical timeline and only 65.8% usable homography; not worth the alignment effort within the time available |
 
 ## 3. Training data
-TODO — none / list every labelled dataset, source, who labelled it, how much. None from BAR-ATH.
+_TODO: "None — no labelled data was used; every component is rule-based or unsupervised." If any
+team member used labelled data from OTHER games, list its source, who labelled it and how much._
+No labels from BAR-ATH were used for training, tuning or validation.
 
 ## 4. Components
-### 4.1 Loader and alignment (P1)
+
+### 4.1 Loader and frame alignment
+`mtah/loader.py` streams the raw ATD once (about 11 s) and writes `data/derived/frames.npz`, one
+row per tactical video frame (199,319). All alignment lives in this one place:
+
+| source | conversion to video frame |
+|---|---|
+| ATD | `frame_id - 1` |
+| Smart Tagging | `round(seconds × 25)` |
+| homography | `frame` as delivered |
+
+The table holds ball and player positions in metres (NaN where the tracker lost them), team of
+each slot, tracked-player counts per team, homography validity and error, the graded-half mask,
+and per-frame Smart Tagging indicators (active home / away / N/A phases, set piece and its type).
+
+**Verification.** The loader's own summary reproduces every figure published in DATA.md: ball
+observed on 56.9% of all frames and 59.3% of graded frames, a mean of 20.5 tracked players per
+graded frame, homography valid on 100% of frames, 158,857 graded frames in two halves of 79,467
+and 79,390. Re-running `starter/baseline.py` reproduces the published baseline scores exactly
+(baseline_smooth50: macroF1 0.6207, spellF1 0.3256 on the public window), which confirms the data
+bundle and the alignment before any of our own logic is involved.
+
 ### 4.2 Ball reconstruction (P3)
+_TODO_
+
 ### 4.3 Dead-ball detector (P2)
-### 4.4 H vs A model (P4)
+_TODO_
+
+### 4.4 Home vs away model (P4)
+_TODO_
+
 ### 4.5 Smart Tagging prior and decoder (P5)
+_TODO_
 
 ## 5. Possession rules implemented
-Loose balls, challenges, restarts: TODO (P4 + P5)
+_TODO (P4 + P5): loose balls, challenges, restarts — where the line was drawn and why._
 
 ## 6. Validation without the private ground truth
-Team diagnostics (possession count, mean length, D share, short-spell share), checked for
-football plausibility. The public 5 minutes were used only to check alignment and file format.
+The public five minutes contain only 17 possessions, which cannot rank two versions of a system
+(EVALUATION.md), so we did not tune on them. They were used once per integration, by one team
+member, only to catch bugs — misalignment or swapped teams.
+
+Every change was instead compared with team-wide diagnostics computed on the full match without
+any ground truth (`python -m mtah.diagnostics`): number of possessions, mean possession length,
+share of dead-ball frames, home share of alive frames, and share of possessions shorter than 2 s.
+Each value was checked for plausibility against football knowledge before a change was merged.
+
+| version | possessions | mean length | D share | home share | < 2 s |
+|---|---|---|---|---|---|
+| v1 (dummy components) | 441 | 8.4 s | 41.6% | 0.59 | 16.8% |
+| final | _TODO_ | | | | |
 
 ## 7. Limitations and what we would do with more time
-TODO (everyone, one paragraph per component)
+- **Loader:** the broadcast recording is not used; mapping it onto the tactical timeline could
+  recover ball positions where the tactical tracker loses the ball.
+- _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
 ```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-# put the data bundle in ./data or set MTAH_DATA_DIR
-python run_all.py --team <TEAM NAME>                   # -> submissions/<TEAM NAME>.csv
+python -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -r requirements.txt        # numpy 2.5.5, pandas 3.1.1 (pinned)
+# unpack the data bundle into ./data (data/tactical/...) or set MTAH_DATA_DIR
+python run_all.py --team ronaldo2008   # -> submissions/ronaldo2008.csv, validated
 ```
-Deterministic: fixed seeds, pinned versions; the run prints the sha256 of the file.
+The run is deterministic (fixed seeds, no randomness in the pipeline) and prints the sha256 of the
+output file. A fresh clone with a fresh environment reproduces the identical file; this is checked
+by `scripts/check_reproducible.sh`. The match data is not in the repository (`.gitignore`), in
+line with the terms of use.
