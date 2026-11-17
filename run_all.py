@@ -4,12 +4,14 @@
     python run_all.py --team TEAMNAME --force    # also rebuild the loader cache
 
 Steps (each owner only edits their own module; this file is Person 1's):
-    1. mtah.loader   (P1)  data/derived/frames.npz
-    2. mtah.ball     (P3)  data/derived/ball_clean.npz
-    3. mtah.dead     (P2)  data/derived/p_dead.npz
-    4. mtah.team     (P4)  data/derived/p_team.npz        needs ball_clean
-    5. mtah.tags     (P5)  data/derived/tag_prior.npz
-    6. mtah.decoder  (P5)  labels -> submissions/<team>.csv
+    1. mtah.loader          (P1)  data/derived/frames.npz
+    2. mtah.ball            (P3)  data/derived/ball_clean.npz
+    3. src/make_p_dead.py   (P2)  data/derived/p_dead.csv
+       mtah.p2_adapter      (P5)  p_dead.csv -> data/derived/p_dead.npz (checked, with sha256)
+    4. mtah.team            (P4)  data/derived/p_team.npz        needs ball_clean
+    5. mtah.tags            (P5)  data/derived/tag_prior.npz     built for the record; the decoder
+                                  does not use it (disabled by P5, see CONTRACT.md)
+    6. mtah.decoder         (P5)  P4 LLR + P2 dead mask -> Viterbi -> submissions/<team>.csv
     7. validate_submission.py + diagnostics + sha256 of the file
 
 Deterministic on purpose: fixed seeds, no wall-clock or random input. Two runs on the same data
@@ -33,8 +35,11 @@ random.seed(SEED)
 np.random.seed(SEED)
 os.environ.setdefault("PYTHONHASHSEED", str(SEED))
 
-from mtah import ball, dead, decoder, diagnostics, loader, tags, team  # noqa: E402
-from mtah.contract import N_FRAMES, SUBMISSIONS_DIR  # noqa: E402
+from mtah import ball, decoder, diagnostics, loader, p2_adapter, tags, team  # noqa: E402
+from mtah.contract import DERIVED_DIR, N_FRAMES, SUBMISSIONS_DIR  # noqa: E402
+
+P2_SCRIPT = os.path.join(ROOT, "src", "make_p_dead.py")
+P2_CSV = os.path.join(DERIVED_DIR, "p_dead.csv")
 
 
 def write_submission(path, labels):
@@ -54,6 +59,14 @@ def sha256(path):
     return h.hexdigest()
 
 
+def run_p2():
+    """P2 ships a standalone script that writes a CSV; run it, then adapt it to the NPZ contract."""
+    result = subprocess.run([sys.executable, P2_SCRIPT, "--out", P2_CSV])
+    if result.returncode != 0:
+        sys.exit("P2 (src/make_p_dead.py) failed")
+    return p2_adapter.adapt(P2_CSV, replace=True)
+
+
 def step(name, fn):
     t0 = time.time()
     print("[{}] ...".format(name), flush=True)
@@ -70,10 +83,12 @@ if __name__ == "__main__":
 
     step("loader  P1", lambda: loader.build(force=args.force))
     step("ball    P3", ball.build)
-    step("dead    P2", dead.build)
+    step("dead    P2", run_p2)
     step("team    P4", team.build)
     step("tags    P5", tags.build)
-    labels = step("decoder P5", decoder.decode)
+    labels, info = step("decoder P5", lambda: decoder.decode(return_info=True))
+    print("decoder: switch cost {:.4f}, unresolved alive stretches {}".format(
+        info["switch_cost"], info["unresolved"]))
 
     out = write_submission(os.path.join(SUBMISSIONS_DIR, args.team + ".csv"), labels)
     print("\nwrote", os.path.relpath(out, ROOT))
