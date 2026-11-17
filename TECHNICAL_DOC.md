@@ -16,8 +16,9 @@ else's code, only on their output file.
 
 P5 reuses P4's reference H/A Viterbi on the sum of its two LLR channels, with P4's default switch
 cost and dead-ball mask. This preserves P4's episode evidence budget and avoids a second smoothing
-or duration model. It supersedes the earlier three-state decoder proposal. Smart Tagging remains
-an optional, separately bounded experimental prior and is disabled by default.
+or duration model. It supersedes the earlier three-state decoder proposal. Smart Tagging is a
+separately built experimental prior. It is disabled by default, and explicit attempts to enable
+an unverified external prior are also rejected in the current P5 implementation.
 
 ## 2. Assets used and dropped
 | asset | used? | how |
@@ -105,9 +106,16 @@ evidence, it remains X and is reported as unresolved rather than borrowing the o
 
 P2 supplies `frame,p_dead` CSV whereas the model contract reads NPZ. `mtah/p2_adapter.py` checks
 exact frame alignment and finite [0,1] probabilities without sorting, filling or clipping. It
-preserves the CSV, stores its SHA-256 with the float32 contract artifact, verifies the NPZ round
-trip and requires explicit replacement of an existing artifact from a different source. The P5
-entry point never calls `dead.build()` or the full pipeline.
+preserves the CSV and stores its SHA-256 with the float32 contract artifact. P5's local
+`mtah/p5_io.py` uses the shared contract's dtype rules and checks without changing
+`mtah/contract.py`: it writes a temporary NPZ in the destination directory, flushes and fsyncs it,
+then reopens it and verifies every field, dtype and value (including provenance) before publication.
+New artifacts use an exclusive hard link so a concurrent writer's output cannot be overwritten;
+explicit replacement uses `os.replace`. A failed write, verification or publication leaves an
+existing artifact intact and removes the temporary file. The same writer is used for P5's own
+`tag_prior.npz`. A different or unprovenanced adapter NPZ still requires `--replace-npz`; no actual
+P2 artifact is replaced during synthetic checks. The P5 entry point never calls `dead.build()` or
+the full pipeline.
 
 `mtah/tags.py` reads P1's normalized events CSV, retaining phase codes instead of using flattened
 home/away phase counts. Attacking phases support their named team; defending phases support the
@@ -115,7 +123,16 @@ opponent. Each phase has at most one nat of absolute LLR distributed over its ac
 regardless of duration. Overlapping phases retain separate budgets and may cancel. N/A and unknown
 phase codes give no team evidence. Set pieces populate restart metadata without forcing a team or
 dead-ball interval. `llr_tag` and per-phase budget audit arrays accompany the compatible probability
-fields. This artifact is **not loaded by the default decoder**; opt-in awaits team agreement.
+fields. **`tag_prior` is OFF by default and is not read by the submission decoder.**
+
+The one-nat-per-phase bound is a property of this generator and its synthetic checks. For an
+arbitrary supplied NPZ, finite `llr_tag` values and self-reported phase-budget arrays do not prove
+that each original phase respected the bound: their provenance and consistency with source events
+have not been independently verified. Therefore both `use_tag_prior=True` and the CLI's retained
+`--use-tag-prior` flag fail explicitly before input adaptation, and `decode_arrays` rejects a
+supplied `tag_llr`. This supersedes earlier descriptions of an available experimental opt-in.
+Enabling tags requires separate team agreement and a verified integration; it is not achieved by
+supplying a file or setting the old flag.
 
 The output writer requires 199,319 exact H/A/D/X labels, emits canonical `frame,label` CSV, applies
 the official format checker and publishes the validated file atomically. Existing outputs need
@@ -154,8 +171,12 @@ Each value was checked for plausibility against football knowledge before a chan
 - **Decoder and tags (P5):** the default dead-ball decisions depend entirely on P2 and P4's mask;
   this component does not improve a constant P2 input. An entirely evidence-free half stays
   unresolved (X). Automatic tag phases have uncertain boundaries and correlated overlaps, so even
-  the one-nat-per-phase cap is not evidence that enabling tags improves possession recovery.
-  Real-match accuracy and reproduction on the pinned dependencies still require P1's integration.
+  the generator's one-nat-per-phase cap is not evidence that enabling tags improves possession
+  recovery, nor a guarantee for arbitrary externally supplied priors. Tags remain disabled.
+  Exclusive NPZ publication needs filesystem hard-link support; unsupported filesystems fail
+  safely rather than falling back to a partial or overwriting write. Atomic publication is not a
+  guarantee of durability after every possible storage or power failure. Real-match accuracy and
+  reproduction on the pinned dependencies still require P1's integration.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction

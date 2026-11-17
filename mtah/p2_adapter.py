@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mtah import contract
+from mtah import contract, p5_io
 
 
 def read_csv(path):
@@ -57,12 +57,8 @@ def adapt(csv_path, replace=False):
                 and np.array_equal(previous["p_dead"], converted)):
             return str(output)
         raise FileExistsError("p_dead.npz differs or has no provenance; use --replace-npz explicitly")
-    result = contract.save("p_dead", p_dead=converted, source_sha256=np.array(digest))
-    verified = contract.load("p_dead")
-    if (not np.array_equal(verified["p_dead"], converted)
-            or str(verified["source_sha256"]) != digest):
-        raise ValueError("P2 NPZ round-trip verification failed")
-    return result
+    return p5_io.save_npz("p_dead", replace=replace, p_dead=converted,
+                          source_sha256=np.array(digest))
 
 
 def main(argv=None):

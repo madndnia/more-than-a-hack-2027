@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from games import GAME, half_video_blocks
-from mtah import contract, decoder, loader, p2_adapter, ref_decoder, tags, team
+from mtah import contract, decoder, loader, p2_adapter, p5_io, ref_decoder, tags, team
 
 
 def evidence(ball, noball=None, ep=team.EP_LLR_PRIOR):
@@ -132,8 +132,24 @@ class DecoderTests(unittest.TestCase):
                 patch.object(contract, "load", side_effect=load):
             self.assertEqual(set(decoder.decode()), {"A"})
             self.assertEqual(requested, ["p_team", "p_dead"])
-            self.assertEqual(set(decoder.decode(use_tag_prior=True)), {"H"})
-        self.assertIn("tag_prior", requested)
+            with self.assertRaisesRegex(ValueError, "tag prior is disabled"):
+                decoder.decode(use_tag_prior=True)
+        self.assertEqual(requested, ["p_team", "p_dead"])
+
+    def test_arbitrary_prior_is_rejected_even_if_finite_and_shaped_correctly(self):
+        half = np.ones(40, dtype=int)
+        for prior in (np.ones(40), np.full(40, 1 / 40)):
+            with self.subTest(prior_sum=float(prior.sum())), \
+                    self.assertRaisesRegex(ValueError, "per-phase budget is not verified"):
+                decoder.decode_arrays(evidence(np.ones(40)), np.zeros(40), half, tag_llr=prior)
+
+    def test_prior_opt_in_fails_before_reading_or_adapting_inputs(self):
+        with patch.object(decoder, "load_half") as load_half, \
+                patch.object(p2_adapter, "adapt") as adapt:
+            with self.assertRaisesRegex(ValueError, "tag prior is disabled"):
+                decoder.decode(p_dead_csv="unconfirmed.csv", replace_npz=True, use_tag_prior=True)
+            load_half.assert_not_called()
+            adapt.assert_not_called()
 
     def test_missing_cache_does_not_build_loader(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -211,6 +227,92 @@ class AdapterTests(unittest.TestCase):
             p2_adapter.adapt(output, replace=True)
         self.assertEqual(output.read_bytes(), before)
 
+    def test_old_npz_survives_until_temporary_npz_is_verified(self):
+        output = Path(contract.save("p_dead", p_dead=np.zeros(4)))
+        before = output.read_bytes()
+        original_verify = p5_io._verify
+        staged_paths = []
+
+        def verify(path, name, expected):
+            staged_paths.append(Path(path))
+            self.assertEqual(Path(path).parent, output.parent)
+            self.assertNotEqual(Path(path), output)
+            self.assertEqual(output.read_bytes(), before)
+            original_verify(path, name, expected)
+
+        with patch.object(p5_io, "_verify", side_effect=verify):
+            p2_adapter.adapt(self.source, replace=True)
+        self.assertEqual(len(staged_paths), 1)
+        self.assertFalse(staged_paths[0].exists())
+        self.assertGreater(contract.load("p_dead")["p_dead"][2], .99)
+
+    def test_partial_write_keeps_old_artifact_and_source_and_cleans_temporary(self):
+        output = Path(contract.save("p_dead", p_dead=np.zeros(4)))
+        before, source_before = output.read_bytes(), self.source.read_bytes()
+
+        def failed_write(handle, **arrays):
+            handle.write(b"incomplete synthetic NPZ")
+            raise OSError("simulated write failure")
+
+        with patch.object(p5_io.np, "savez", side_effect=failed_write):
+            with self.assertRaisesRegex(OSError, "simulated write failure"):
+                p2_adapter.adapt(self.source, replace=True)
+        self.assertEqual(output.read_bytes(), before)
+        self.assertEqual(self.source.read_bytes(), source_before)
+        self.assertEqual(list(self.root.glob(".p5-*.npz")), [])
+
+    def test_failed_verification_of_metadata_never_publishes(self):
+        output = Path(contract.save("p_dead", p_dead=np.zeros(4)))
+        before = output.read_bytes()
+        original_save = np.savez
+
+        def corrupt_metadata(handle, **arrays):
+            arrays["source_sha256"] = np.array("incorrect synthetic source hash")
+            original_save(handle, **arrays)
+
+        with patch.object(p5_io.np, "savez", side_effect=corrupt_metadata):
+            with self.assertRaisesRegex(ValueError, "array verification failed"):
+                p2_adapter.adapt(self.source, replace=True)
+        self.assertEqual(output.read_bytes(), before)
+        self.assertEqual(list(self.root.glob(".p5-*.npz")), [])
+
+    def test_failed_atomic_replace_preserves_old_npz(self):
+        output = Path(contract.save("p_dead", p_dead=np.zeros(4)))
+        before = output.read_bytes()
+        with patch.object(p5_io.os, "replace", side_effect=PermissionError("simulated locked output")):
+            with self.assertRaises(PermissionError):
+                p2_adapter.adapt(self.source, replace=True)
+        self.assertEqual(output.read_bytes(), before)
+        self.assertEqual(list(self.root.glob(".p5-*.npz")), [])
+
+    def test_concurrently_created_output_is_never_overwritten_by_default(self):
+        output = Path(contract.path("p_dead"))
+        original_link = os.link
+        concurrent_bytes = []
+
+        def concurrent_writer(source, destination):
+            contract.save("p_dead", p_dead=np.full(4, .7))
+            concurrent_bytes.append(output.read_bytes())
+            return original_link(source, destination)
+
+        with patch.object(p5_io.os, "link", side_effect=concurrent_writer):
+            with self.assertRaises(FileExistsError):
+                p2_adapter.adapt(self.source)
+        self.assertEqual(output.read_bytes(), concurrent_bytes[0])
+        self.assertEqual(list(self.root.glob(".p5-*.npz")), [])
+
+    def test_failed_exclusive_publication_leaves_no_partial_output(self):
+        with patch.object(p5_io.os, "link", side_effect=OSError("simulated unsupported hard link")):
+            with self.assertRaises(OSError):
+                p2_adapter.adapt(self.source)
+        self.assertFalse(Path(contract.path("p_dead")).exists())
+        self.assertEqual(list(self.root.glob(".p5-*.npz")), [])
+
+    def test_p5_writer_refuses_artifacts_owned_by_other_components(self):
+        with self.assertRaisesRegex(ValueError, "only supports p_dead and tag_prior"):
+            p5_io.save_npz("p_team", p_home=np.ones(4))
+        self.assertFalse(Path(contract.path("p_team")).exists())
+
 
 class PriorTests(unittest.TestCase):
     def test_phase_budget_does_not_grow_with_duration(self):
@@ -285,6 +387,13 @@ class PriorTests(unittest.TestCase):
             self.assertAlmostEqual(result["llr_tag"].sum(), 1)
             self.assertEqual(result["llr_tag"].dtype, np.float64)
             self.assertEqual(events.read_bytes(), before)
+            prior_path = Path(contract.path("tag_prior"))
+            prior_before = prior_path.read_bytes()
+            with patch.object(p5_io.os, "replace", side_effect=PermissionError("synthetic failure")):
+                with self.assertRaises(PermissionError):
+                    tags.build(events)
+            self.assertEqual(prior_path.read_bytes(), prior_before)
+            self.assertEqual(list(Path(directory).glob(".p5-*.npz")), [])
             events.write_text("start_frame,end_frame,code,team\n0.5,20,BUILD UP,H\n")
             with self.assertRaises(ValueError):
                 tags.read_events(events)

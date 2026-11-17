@@ -2,8 +2,9 @@
 
     python -m mtah.decoder --p-dead-csv data/derived/p_dead.csv
 
-Reads existing frames/p_team artifacts. Smart Tagging is OFF unless explicitly
-requested after team agreement. No second smoothing or duration filter is used.
+Reads existing frames/p_team artifacts. Smart Tagging is disabled: arbitrary
+external priors have no verified per-phase budget. No second smoothing or duration
+filter is used.
 """
 import argparse
 import csv
@@ -15,6 +16,9 @@ import numpy as np
 
 from evaluation import possession_metrics as pm
 from mtah import contract, loader, ref_decoder, team
+
+PRIOR_DISABLED = ("tag prior is disabled: an external prior's per-phase budget is not verified; "
+                  "team agreement and a verified integration are required before enabling it")
 
 
 def validate_half(half):
@@ -57,6 +61,8 @@ def decode_arrays(p_team, p_dead, half, tag_llr=None, return_info=False):
     All-zero alive stretches follow P4: borrow from the same half, otherwise
     remain X and count as unresolved. A missing channel is an error, not zero.
     """
+    if tag_llr is not None:
+        raise ValueError(PRIOR_DISABLED)
     half = validate_half(half)
     n = len(half)
     llr = (_finite_vector(p_team["llr_ball"], "llr_ball", n)
@@ -70,28 +76,23 @@ def decode_arrays(p_team, p_dead, half, tag_llr=None, return_info=False):
     dead_probability = _finite_vector(p_dead, "p_dead", n)
     if np.any((dead_probability < 0) | (dead_probability > 1)):
         raise ValueError("p_dead must be in [0, 1]")
-    if tag_llr is not None:
-        llr = llr + _finite_vector(tag_llr, "llr_tag", n)
-        if not np.isfinite(llr).all():
-            raise ValueError("combined evidence is not finite")
     dead = ref_decoder.dead_mask(dead_probability, half)
     labels, info = ref_decoder.decode(llr, dead, half, switch, return_info=True)
-    info.update(switch_cost=float(switch), ep_llr=float(ep), tag_prior=tag_llr is not None)
+    info.update(switch_cost=float(switch), ep_llr=float(ep), tag_prior=False)
     return (labels, info) if return_info else labels
 
 
 def decode(p_dead_csv=None, replace_npz=False, use_tag_prior=False, return_info=False):
     """Keep the no-argument pipeline interface; never rebuild another component."""
+    if use_tag_prior:
+        raise ValueError(PRIOR_DISABLED)
     half = load_half()
     p_team = contract.load("p_team")
     if p_dead_csv is not None:
         from mtah.p2_adapter import adapt
         adapt(p_dead_csv, replace=replace_npz)
     p_dead = contract.load("p_dead")["p_dead"]
-    tag_llr = None
-    if use_tag_prior:
-        tag_llr = contract.load("tag_prior")["llr_tag"]
-    return decode_arrays(p_team, p_dead, half, tag_llr, return_info=return_info)
+    return decode_arrays(p_team, p_dead, half, return_info=return_info)
 
 
 def validate_file(path):
@@ -141,7 +142,7 @@ def main(argv=None):
     parser.add_argument("--output", default=os.path.join(contract.SUBMISSIONS_DIR, "submission.csv"))
     parser.add_argument("--overwrite", action="store_true", help="replace an existing valid submission")
     parser.add_argument("--use-tag-prior", action="store_true",
-                        help="experimental opt-in; use only after team agreement")
+                        help="currently rejected: external per-phase budgets are not verified")
     args = parser.parse_args(argv)
     if args.replace_npz and args.p_dead_csv is None:
         parser.error("--replace-npz requires --p-dead-csv")

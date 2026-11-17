@@ -9,7 +9,7 @@ import csv
 
 import numpy as np
 
-from mtah import contract, loader
+from mtah import loader, p5_io
 
 ATTACK = frozenset(("PLAYERS IN THE BOX", "BALL IN FINAL THIRD", "BALL IN THE BOX",
                     "CREATING CHANCES", "LONG BALL", "PROGRESSION",
@@ -104,7 +104,7 @@ def build(events_path=None):
     from mtah.decoder import load_half
     half = load_half()
     events = read_events(loader.EVENTS_PATH if events_path is None else events_path)
-    return contract.save("tag_prior", **build_prior(events, half))
+    return p5_io.save_npz("tag_prior", replace=True, **build_prior(events, half))
 
 
 def main(argv=None):
