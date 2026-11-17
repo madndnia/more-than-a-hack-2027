@@ -14,7 +14,10 @@ rather than hard labels. Second, it let five people work in parallel: every comp
 output contract (`CONTRACT.md`, enforced by `mtah/contract.py`), so nobody depended on anybody
 else's code, only on their output file.
 
-_TODO (P5): one paragraph on the final decoder and why it was chosen over alternatives._
+P5 reuses P4's reference H/A Viterbi on the sum of its two LLR channels, with P4's default switch
+cost and dead-ball mask. This preserves P4's episode evidence budget and avoids a second smoothing
+or duration model. It supersedes the earlier three-state decoder proposal. Smart Tagging remains
+an optional, separately bounded experimental prior and is disabled by default.
 
 ## 2. Assets used and dropped
 | asset | used? | how |
@@ -93,10 +96,38 @@ possessions), which points to missing ball evidence rather than the decoder as t
 raw ball field (`ball_c3`) is not speed (correlation 0.06) and was left unused.
 
 ### 4.5 Smart Tagging prior and decoder (P5)
-_TODO_
+`mtah/decoder.py` reads existing artifacts and delegates to `mtah/ref_decoder.py` with
+`llr_ball + llr_noball`, `team.default_switch_cost(ep_llr)` and a single `dead_mask` call. It does
+not reuse `p_home`, resmooth labels or impose minimum durations. Missing LLR channels, nonfinite
+values and malformed half masks fail explicitly. Outside the two half blocks it writes X. A
+zero-evidence alive stretch follows P4's same-half neighbour rule; if the whole half has no
+evidence, it remains X and is reported as unresolved rather than borrowing the other half's team.
+
+P2 supplies `frame,p_dead` CSV whereas the model contract reads NPZ. `mtah/p2_adapter.py` checks
+exact frame alignment and finite [0,1] probabilities without sorting, filling or clipping. It
+preserves the CSV, stores its SHA-256 with the float32 contract artifact, verifies the NPZ round
+trip and requires explicit replacement of an existing artifact from a different source. The P5
+entry point never calls `dead.build()` or the full pipeline.
+
+`mtah/tags.py` reads P1's normalized events CSV, retaining phase codes instead of using flattened
+home/away phase counts. Attacking phases support their named team; defending phases support the
+opponent. Each phase has at most one nat of absolute LLR distributed over its active half frames,
+regardless of duration. Overlapping phases retain separate budgets and may cancel. N/A and unknown
+phase codes give no team evidence. Set pieces populate restart metadata without forcing a team or
+dead-ball interval. `llr_tag` and per-phase budget audit arrays accompany the compatible probability
+fields. This artifact is **not loaded by the default decoder**; opt-in awaits team agreement.
+
+The output writer requires 199,319 exact H/A/D/X labels, emits canonical `frame,label` CSV, applies
+the official format checker and publishes the validated file atomically. Existing outputs need
+explicit overwrite and must themselves be valid submissions. Synthetic checks cover reference
+equivalence, half boundaries, unresolved stretches, adapter rejection/preservation, phase budgets,
+and a deterministic full-length CLI run checked by `evaluation/validate_submission.py`. These are
+format and behaviour checks, not a claim of accuracy on this match. No public GT was used by P5.
 
 ## 5. Possession rules implemented
-_TODO (P4 + P5): loose balls, challenges, restarts — where the line was drawn and why._
+P4 supplies control evidence for loose balls and challenges; P5 retains its temporal decision rule
+without adding a second touch/duration filter. D is determined by P4's dead-mask operation on P2
+probabilities. Smart Tagging restarts remain metadata while the experimental prior is disabled.
 
 ## 6. Validation without the private ground truth
 The public five minutes contain only 17 possessions, which cannot rank two versions of a system
@@ -120,6 +151,11 @@ Each value was checked for plausibility against football knowledge before a chan
   are missed where the ball is lost. With labelled tracking from other matches the hand-set
   thresholds and the no-ball model could be fitted and validated properly instead of on
   pseudo-labels.
+- **Decoder and tags (P5):** the default dead-ball decisions depend entirely on P2 and P4's mask;
+  this component does not improve a constant P2 input. An entirely evidence-free half stays
+  unresolved (X). Automatic tag phases have uncertain boundaries and correlated overlaps, so even
+  the one-nat-per-phase cap is not evidence that enabling tags improves possession recovery.
+  Real-match accuracy and reproduction on the pinned dependencies still require P1's integration.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
@@ -134,3 +170,8 @@ The run is deterministic (fixed seeds, no randomness in the pipeline) and prints
 output file. A fresh clone with a fresh environment reproduces the identical file; this is checked
 by `scripts/check_reproducible.sh`. The match data is not in the repository (`.gitignore`), in
 line with the terms of use.
+
+For P5 integration with an existing P2 CSV, use the standalone command in `CONTRACT.md`, not the
+full rebuild above. Run P4's synthetic suite with `python tests/test_team.py` and P5's with
+`python -m unittest discover -s tests -p test_p5.py -v`. P5 tests write only synthetic temporary
+artifacts and do not read the public ground truth or replace a competition-data artifact.
