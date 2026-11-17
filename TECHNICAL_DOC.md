@@ -61,7 +61,36 @@ _TODO_
 _TODO_
 
 ### 4.4 Home vs away model (P4)
-_TODO_
+`mtah/team.py` writes `p_team.npz`: for every frame, how strongly the tracking says that home or
+away controls the ball, as log-likelihood ratios a temporal decoder can add up. **Ball channel.**
+P(player *i* is at the ball) = softmax(−d<sub>i</sub> / 0.5 m) over tracked players, summed per
+team; this one quantity covers the nearest distance of each team, the number of players near the
+ball and duels (equal distances give no evidence). It counts only when the ball is slow (full below
+7 m/s, none above 12 m/s), a tracked player is within 1.5–3 m and the ball was observed (or
+interpolated less than 0.5 s from an observation), and it is averaged over ±0.5 s, so a touch or a
+pass flying past an opponent is not control. Tracks lost next to the ball can only cancel evidence,
+never create it. The evidence of one control episode is capped at ln((1−e)/e), where e is the
+share of episodes that look like errors (an isolated short episode between two of the other team,
+Beta(1, 19) prior): e = 5.6% and 2.82 nats on this match. **No-ball channel.** Block velocity
+towards the opponent's goal and the difference in team spread, combined by a logistic regression
+fitted on pseudo-labels from the ball channel (no ground truth), out-of-fold by half, with a
+temperature calibrated on whole ball-less stretches and at most 1 nat per stretch. It is kept only
+if, inside ball-less stretches where possession changed, its evidence moves towards the new
+possessor more often than chance; on this match it does (73.9% of 46 stretches, p = 0.001), so it
+is on. `p_home` adds both channels for a decoder that reads one value per frame;
+`mtah/ref_decoder.py` is a reference Viterbi on the summed LLRs (switch cost between what may not
+and what must switch possession: 1.54 nats here) with 36 synthetic tests in `tests/test_team.py`.
+On the full match it gives 210 possessions, mean 18.0 s, 11% shorter than 2 s.
+
+**Where it does not work.** The ball is missing on 38.7% of graded frames and clear control is
+visible on only 26.5%; possession changes inside those gaps rest on the no-ball channel, which is
+weak by design (49 nats of evidence over the match against 1,582 from the ball) and can only place
+a change, never make one alone. The reference decoder therefore finds about 76 changes in open
+play, which is probably too few. The tracking has no ball height, so an aerial ball dropping slowly
+next to a player looks like control. All thresholds are physical priors, not fitted; the result is
+not very sensitive to the switch cost (1.91 → 1.54 nats moved the count from 198 to 210
+possessions), which points to missing ball evidence rather than the decoder as the limit. The third
+raw ball field (`ball_c3`) is not speed (correlation 0.06) and was left unused.
 
 ### 4.5 Smart Tagging prior and decoder (P5)
 _TODO_
@@ -87,6 +116,10 @@ Each value was checked for plausibility against football knowledge before a chan
 ## 7. Limitations and what we would do with more time
 - **Loader:** the broadcast recording is not used; mapping it onto the tactical timeline could
   recover ball positions where the tactical tracker loses the ball.
+- **Home vs away (P4):** better ball reconstruction would help most, since possession changes
+  are missed where the ball is lost. With labelled tracking from other matches the hand-set
+  thresholds and the no-ball model could be fitted and validated properly instead of on
+  pseudo-labels.
 - _TODO: one paragraph per component (everyone)._
 
 ## 8. Reproduction
