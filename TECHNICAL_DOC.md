@@ -26,14 +26,16 @@ an unverified external prior are also rejected in the current P5 implementation.
 | tactical ATD (players + ball) | yes | main input; read by `mtah/loader.py`, positions converted to metres on a 105.3 × 68.0 m pitch |
 | tactical ATD metadata | yes | team of each of the 46 track slots (first team = home) |
 | Smart Tagging | yes | team evidence from phase tags, set pieces as restart anchors (P5) |
-| tactical homography | loaded, _TODO: used?_ | validity and reprojection error are in the per-frame table |
-| tactical video | no | not needed for the final pipeline; _TODO if anyone used it for debugging_ |
+| tactical homography | loaded, not used | validity and reprojection error are in the per-frame table; no component needed pixel coordinates |
+| tactical video | no | the pipeline reads tracking and tagging only |
 | broadcast video / ATD / homography | no | not synchronised to the tactical timeline and only 65.8% usable homography; not worth the alignment effort within the time available |
 
 ## 3. Training data
-_TODO: "None — no labelled data was used; every component is rule-based or unsupervised." If any
-team member used labelled data from OTHER games, list its source, who labelled it and how much._
-No labels from BAR-ATH were used for training, tuning or validation.
+None. No labelled data from any game was used. Every component is rule-based with football-sense
+defaults; the only fitted model (P4's no-ball logistic regression) is trained on pseudo-labels
+produced by P4's own ball channel, decided by an algorithm and not by a person. No labels from
+BAR-ATH were used for training, tuning or validation, and no component reads the public ground
+truth.
 
 ## 4. Components
 
@@ -105,7 +107,28 @@ missing segments, and the reference tracker positions are automatic, not correct
 These results do not validate possession accuracy or confidence calibration.
 
 ### 4.3 Dead-ball detector (P2)
-_TODO_
+`src/make_p_dead.py` writes `data/derived/p_dead.csv`, P(ball is dead) per video frame, built in
+log-odds: a football prior plus evidence terms, then a sigmoid. It reads the raw ATD and Smart
+Tagging directly.
+
+| evidence | rule | log-odds |
+|---|---|---|
+| prior | dead ball is a minority of graded time, P = 0.30 | logit(0.30) |
+| out of bounds | ball observed more than 0.5 m beyond a touchline or goal line; the state is carried through missing frames for up to 20 s, because a ball that left the pitch is rarely tracked again before the restart | +4.0 |
+| stationary | ball stays inside 1.5 m for about 2 s (51-frame centred window, gaps up to 1 s bridged) | +2.0 |
+| moving | ball speed over ±0.24 s above 2 m/s / above 4 m/s | −1.0 / −2.0 |
+| set piece | inside a Smart Tagging SET PIECES instance, and a ramp over the 6 s before it | up to +1.0 |
+| team speed | mean speed of all tracked players over ~2 s; walking pace pushes towards dead | ±0.8 |
+| ball missing | **no** dead-ball evidence: occlusion happens in open play all the time | 0 |
+
+Frames 110,808–113,741 (graded, before the second-half kickoff, all D according to FAQ.md) are
+set to 0.999; ungraded frames get 0.5; everything is clipped to [0.001, 0.999]. Every weight is a
+football-sense default chosen from the plausibility diagnostics the script prints (number and
+length of dead stretches per half), never by scoring against the public window. The decoder turns
+the probabilities into D with P4's dead mask: `p_dead ≥ 0.5`, then a centred majority over a short
+window inside each half. Compared with the scaffold, which called every frame without a tracked
+ball dead, the D share of graded frames fell from 41.6% to 18.3%, a plausible share of stoppage time for a
+professional match.
 
 ### 4.4 Home vs away model (P4)
 `mtah/team.py` writes `p_team.npz`: for every frame, how strongly the tracking says that home or
@@ -202,7 +225,7 @@ Each value was checked for plausibility against football knowledge before a chan
 | version | possessions | mean length | D share | home share | < 2 s |
 |---|---|---|---|---|---|
 | v1 (dummy components) | 441 | 8.4 s | 41.6% | 0.59 | 16.8% |
-| final | _TODO_ | | | | |
+| final (submitted) | 245 | 21.2 s | 18.3% | 0.53 | 8.6% |
 
 ## 7. Limitations and what we would do with more time
 - **Loader:** the broadcast recording is not used; mapping it onto the tactical timeline could
@@ -218,13 +241,18 @@ Each value was checked for plausibility against football knowledge before a chan
   recovery, nor a guarantee for arbitrary externally supplied priors. Tags remain disabled.
   Exclusive NPZ publication needs filesystem hard-link support; unsupported filesystems fail
   safely rather than falling back to a partial or overwriting write. Atomic publication is not a
-  guarantee of durability after every possible storage or power failure. Real-match accuracy and
-  reproduction on the pinned dependencies still require P1's integration.
+  guarantee of durability after every possible storage or power failure. 
 - **Ball reconstruction:** long gaps remain weak linear fallbacks, and isolated-spike rejection
   does not detect sustained false tracks. Masked-block checks show error increasing strongly with
   gap duration; future work would test generalisation to naturally missing segments and assess
   downstream effects without tuning on the public possession labels.
-- _TODO: one paragraph per component (everyone)._
+- **Dead ball (P2):** all weights are hand-set priors; a ball that stops while still in play
+  (a goalkeeper holding it, a slow build-up) can be called dead, and a quick restart that the
+  tracker never loses can be missed. Labelled tracking from other matches would let the weights be
+  fitted instead of chosen.
+- **Overall:** the final file averages 21.2 s per possession against 14.2 s published in the README for the
+  public window, which suggests some possession changes are merged rather than invented. We did not adjust for
+  this, because the only way to do so in time was to tune on the public labels.
 
 ## 8. Reproduction
 ```bash
@@ -235,11 +263,13 @@ pip install -r requirements.txt        # numpy 2.5.5, pandas 3.1.1 (pinned)
 python run_all.py --team ronaldo2008   # -> submissions/ronaldo2008.csv, validated
 ```
 The run is deterministic (fixed seeds, no randomness in the pipeline) and prints the sha256 of the
-output file. A fresh clone with a fresh environment reproduces the identical file; this is checked
-by `scripts/check_reproducible.sh`. The match data is not in the repository (`.gitignore`), in
+output file. We verified it by cloning the public repository into an empty folder, creating a new
+virtual environment from `requirements.txt` and running the command above: the file was
+byte-identical, sha256 `3a783a500a6a828fdc42271c5df6dcdfdc1b289375b0fd43b04d3f1da8cfb528`.
+`scripts/check_reproducible.sh` automates the same check. The match data is not in the repository (`.gitignore`), in
 line with the terms of use.
 
-For P5 integration with an existing P2 CSV, use the standalone command in `CONTRACT.md`, not the
-full rebuild above. Run P4's synthetic suite with `python tests/test_team.py` and P5's with
+`run_all.py` runs, in order: loader (P1), ball (P3), `src/make_p_dead.py` plus the CSV adapter
+(P2), team evidence (P4), tag prior (P5, built but not used) and the decoder (P5). Run P4's synthetic suite with `python tests/test_team.py` and P5's with
 `python -m unittest discover -s tests -p test_p5.py -v`. P5 tests write only synthetic temporary
 artifacts and do not read the public ground truth or replace a competition-data artifact.
